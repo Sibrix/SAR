@@ -434,6 +434,28 @@ class SAR_Indexer:
         
         if query is None or len(query) == 0:
             return []
+        
+        postingLists = {}
+        finalAticles = []
+
+        isNot = False
+
+        terms = query.split()
+        for term in terms:
+            if term not in 'NOT':
+                if isNot : postingLists[term] = self.reverse_posting(term)
+                else : postingLists[term] = self.get_posting(term)
+                isNot = False
+            else:
+                isNot = True
+                
+        
+        finalAticles = postingLists[terms[0]]
+        for pl in postingLists[term]:
+            self.and_posting(finalAticles,pl)
+
+        return finalAticles
+
 
         ########################################
         ## COMPLETAR PARA TODAS LAS VERSIONES ##
@@ -459,7 +481,12 @@ class SAR_Indexer:
         ########################################
         ## COMPLETAR PARA TODAS LAS VERSIONES ##
         ########################################
-        pass
+
+        for t in self.index:
+            if t == term:
+                return self.index[t]
+            
+        return []
 
 
 
@@ -474,6 +501,10 @@ class SAR_Indexer:
         return: posting list
 
         """
+
+        for i in range(len(self.index)):
+            if self.index[i] == terms[0]:
+                return self.index[i] #Check After
 
         #################################
         ## COMPLETAR PARA POSICIONALES ##
@@ -496,8 +527,17 @@ class SAR_Indexer:
         return: posting list con todos los artid exceptos los contenidos en p
 
         """
-        
-        pass
+
+        artInP = []
+        artOutP = []
+        for pi in p:
+            artInP.extend(self.get_posting(pi))
+
+        for d in self.articles:
+            if d not in artInP:
+                artOutP.append(d)
+
+        return artOutP
         ########################################
         ## COMPLETAR PARA TODAS LAS VERSIONES ##
         ########################################
@@ -516,8 +556,21 @@ class SAR_Indexer:
         return: posting list con los artid incluidos en p1 y p2
 
         """
-        
-        pass
+        #No skip Pointers?
+        articles = []
+        pi = 0
+        pj = 0
+        while pi < len(p1) and pj < len(p2):
+            if p1[pi] == p2[pj]:
+                articles.append(p1[pi])
+                pi += 1
+                pj += 1
+            elif p1[pi] < p2[pj]:
+                pi += 1
+            else:
+                pj += 1
+
+        return articles
         ########################################
         ## COMPLETAR PARA TODAS LAS VERSIONES ##
         ########################################
@@ -606,6 +659,3 @@ class SAR_Indexer:
         ################
         ## COMPLETAR  ##
         ################
-
-
-
