@@ -5,7 +5,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Optional, List, Union, Dict
+from typing import Optional, List, Tuple, Union, Dict
 import pickle
 import nltk
 from SAR_semantics import SentenceBertEmbeddingModel, BetoEmbeddingCLSModel, BetoEmbeddingModel, SpacyStaticModel
@@ -232,13 +232,20 @@ class SAR_Indexer:
 
         self.load_semantic_model()
         
-        # COMPLETAR
+        chuncks = self.query(query, self.MAX_EMBEDDINGS)
 
-        # 1
-        # 2
-        # 3
-        # 4
-        # 5
+        while chuncks and self.semantic_threshold is not None and chuncks[-1][0] <= self.semantic_threshold:
+            top_k = len(chuncks) + self.MAX_EMBEDDINGS
+            chuncks = self.query(query, top_k)
+        
+        articles = []
+        for chunk in chuncks:
+            artid = chunk[1]
+            articles.append(self.getArticlefromId(artid))
+
+        return articles
+
+
 
 
     def semantic_reranking(self, query:str, articles: List[int]):
@@ -254,12 +261,47 @@ class SAR_Indexer:
             4 - se utiliza la lista ordenada del kdtree para ordenar la lista "articles"
         """
         
-        self.load_semantic_model()
-        # COMPLETAR
-        # 1
-        # 2
-        # 3
-        # 4
+        self.load_semantic_model()  
+        
+        k = 0
+        articlesSorted = []
+        
+
+        while len(articles) is not 0:
+
+            k += self.MAX_EMBEDDINGS
+            articlesQuery = self.getArticlesfromReranking(self, query, k)
+
+            articlesQuery = articlesQuery[k - self.MAX_EMBEDDINGS:k]
+
+            for art in articlesQuery:
+                if art in articles:
+                    articlesSorted.append(art)
+                    articles.remove(art)
+
+        return articles
+
+    def getArticlesfromReranking(self, query:str, k:int):
+
+        """
+        Obtiene los artículos
+        """
+        chuncks = self.query(query, k)
+
+        articlesQuery = []
+        for chunk in chuncks:
+            artid =  chunk[1]
+            articlesQuery.append(self.getArticlefromId(artid))
+        
+        return articlesQuery
+    
+    def getArticlefromId(artid:int):
+        """
+        Obtiene el artículo a partir del id dado por el kdtree
+        """
+        #TODO
+        pass
+
     
 
     ###############################
@@ -433,18 +475,27 @@ class SAR_Indexer:
         """
         
         if query is None or len(query) == 0:
-            return []
+            return {}
         
         postingLists = {}
-        finalAticles = []
+        finalAticles = {}
 
         isNot = False
 
-        terms = query.split()
-        for term in terms:
-            if term not in 'NOT':
-                if isNot : postingLists[term] = self.reverse_posting(term)
-                else : postingLists[term] = self.get_posting(term)
+        terms = re.findall(r'"([^"]*)"|(\S+)', query)
+
+        for positionals,term in terms:
+            if term is not 'NOT':
+                if isNot : 
+                    if positionals:
+                        postingLists[term] = self.reverse_posting(self.get_positionals(positionals))
+                    else:
+                        postingLists[term] = self.reverse_posting(term)
+                else : 
+                    if positionals:
+                        postingLists[term] = self.get_positionals(positionals)
+                    else:
+                        postingLists[term] = self.get_posting(term)
                 isNot = False
             else:
                 isNot = True
@@ -452,7 +503,7 @@ class SAR_Indexer:
         
         finalAticles = postingLists[terms[0]]
         for pl in postingLists[term]:
-            self.and_posting(finalAticles,pl)
+            finalAticles = self.and_posting(finalAticles,pl)
 
         return finalAticles
 
@@ -482,12 +533,9 @@ class SAR_Indexer:
         ## COMPLETAR PARA TODAS LAS VERSIONES ##
         ########################################
 
-        for t in self.index:
-            if t == term:
-                return self.index[t]
-            
-        return []
-
+        if term in self.index:
+            return self.index[term]
+        return {}
 
 
     def get_positionals(self, terms:str):
@@ -502,14 +550,53 @@ class SAR_Indexer:
 
         """
 
-        for i in range(len(self.index)):
-            if self.index[i] == terms[0]:
-                return self.index[i] #Check After
+        #if isinstance(terms, str):
+        terms = self.tokenize(terms)
+        #if not terms:
+        #    return {}
+
+        result = self.get_posting(terms[0])
+        #if not result:
+        #    return {}
+
+        for term in terms[1:]:
+            next_posting = self.get_posting(term)
+            #if not next_posting:
+                #return {}
+
+            new_result = {}
+            for article, positions in result.items():
+                if article not in next_posting:
+                    continue
+
+                next_positions = next_posting[article]
+                i, j = 0, 0
+                matched_positions = []
+                while i < len(positions) and j < len(next_positions):
+                    expected = positions[i] + 1
+                    if next_positions[j] == expected:
+                        matched_positions.append(next_positions[j])
+                        i += 1
+                        j += 1
+                    elif next_positions[j] < expected:
+                        j += 1
+                    else:
+                        i += 1
+
+                if matched_positions:
+                    new_result[article] = matched_positions
+
+            result = new_result
+            #if not result:
+                #return {}
+
+        return result
+            
+        
 
         #################################
         ## COMPLETAR PARA POSICIONALES ##
         #################################
-        pass
 
 
 
@@ -526,18 +613,31 @@ class SAR_Indexer:
 
         return: posting list con todos los artid exceptos los contenidos en p
 
-        """
-
-        artInP = []
-        artOutP = []
+        artInP = {}
+        artOutP = {}
         for pi in p:
-            artInP.extend(self.get_posting(pi))
+            artInP = self.get_posting(pi)
+
+        
+        all_articles = self.articles
 
         for d in self.articles:
             if d not in artInP:
                 artOutP.append(d)
 
         return artOutP
+
+        """
+
+        res = {}
+
+        for art_id in self.articles:
+            
+            if art_id not in p:
+                res[art_id] = art_id.values()
+
+        return res
+    
         ########################################
         ## COMPLETAR PARA TODAS LAS VERSIONES ##
         ########################################
@@ -557,12 +657,12 @@ class SAR_Indexer:
 
         """
         #No skip Pointers?
-        articles = []
+        articles = {}
         pi = 0
         pj = 0
         while pi < len(p1) and pj < len(p2):
             if p1[pi] == p2[pj]:
-                articles.append(p1[pi])
+                articles[p1[pi]] = p1[pi]
                 pi += 1
                 pj += 1
             elif p1[pi] < p2[pj]:
@@ -655,7 +755,16 @@ class SAR_Indexer:
         return: el numero de artículo recuperadas, para la opcion -T
 
         """
-        pass
+
+        results = []
+        if len(query) > 0 and query[0] != '#':
+            results,_ = self.solve_query(query)
+            print(f'{query}\t{results}')
+        else:
+            print(query)
+
+        return len(results)
+
         ################
         ## COMPLETAR  ##
         ################
