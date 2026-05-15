@@ -842,7 +842,3 @@ class SAR_Indexer:
             print(query)
 
         return len(results)
-
-        ################
-        ## COMPLETAR  ##
-        ################
