@@ -5,7 +5,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Optional, List, Union, Dict
+from typing import Optional, List, Tuple, Union, Dict
 import pickle
 import nltk
 from SAR_semantics import SentenceBertEmbeddingModel, BetoEmbeddingCLSModel, BetoEmbeddingModel, SpacyStaticModel
@@ -535,90 +535,42 @@ class SAR_Indexer:
         """
         
         if query is None or len(query) == 0:
-            return []
+            return {}
         
-        # 1. Separamos por espacios usando split() normal
-        raw_terms = query.split()
-        
-        # 2. Reconstruimos los términos uniendo los que van entre comillas
-        tokens = []
-        in_quotes = False
-        current_phrase = []
-        for tk in raw_terms:
-            if not in_quotes:
-                # Si empieza y acaba por comillas (ej: '"hola"')
-                if tk.startswith('"') and tk.endswith('"') and len(tk) > 1:
-                    tokens.append(tk)
-                # Si solo empieza por comillas (ej: '"fin')
-                elif tk.startswith('"'):
-                    in_quotes = True
-                    current_phrase.append(tk)
-                # Si es una palabra normal o NOT
-                else:
-                    tokens.append(tk)
-            else:
-                # Estamos dentro de unas comillas, seguimos agrupando
-                current_phrase.append(tk)
-                # Si termina con comillas (ej: 'semana"')
-                if tk.endswith('"'):
-                    in_quotes = False
-                    tokens.append(" ".join(current_phrase))
-                    current_phrase = []
-        # 3. Ahora procesamos los tokens resultantes (AND, NOT y Búsqueda Posicional)
+        postingLists = {}
+        finalAticles = {}
 
-        result = []
-        is_first = True
-        is_not = False
-        
-        for tk in tokens:
-            # Gestionamos el flag NOT
-            if tk == 'NOT':
-                is_not = True
-                continue
-                
-            # Si es una frase entre comillas (Búsqueda posicional)
-            if tk.startswith('"') and tk.endswith('"'):
-                phrase = tk[1:-1] # Quitamos las comillas
-                terms = self.tokenize(phrase)
-                
-                if len(terms) == 0:
-                    continue
-                elif len(terms) == 1:
-                    current_posting = self.get_posting(terms[0])
-                else:
-                    current_posting = self.get_positionals(terms)
-                    
-            # Si es un término normal
-            else:
-                term = self.tokenize(tk)
-                if len(term) > 0:
-                    current_posting = self.get_posting(term[0])
-                else:
-                    continue
-            # Si el término actual venía precedido de un NOT, invertimos su posting list
-            if is_not:
-                current_posting = self.reverse_posting(current_posting)
-                is_not = False
-            # Si es el primer término, inicializamos el resultado
-            if is_first:
-                result = current_posting
-                is_first = False
-            # Cruzamos los resultados con los que ya teníamos calculados
-            else:
-                result = self.and_posting(result, current_posting)
+        isNot = False
 
-        # Si se activó -S (búsqueda pura semántica independientemente de los términos)
-        if self.semantic_threshold is not None:
-            result = self.solve_semantic_query(query)
-            
-        # Si se activó -R (hacemos intersección booleana normal, y luego ordenamos semánticamente)
-        elif self.semantic_ranking:
-            result = self.semantic_reranking(query, result)
-            
-        # ----------------------------------------------------
+        terms = re.findall(r'"([^"]*)"|(\S+)', query)
+
+        for positionals,term in terms:
+            if term is not 'NOT':
+                if isNot : 
+                    if positionals:
+                        postingLists[term] = self.reverse_posting(self.get_positionals(positionals))
+                    else:
+                        postingLists[term] = self.reverse_posting(term)
+                else : 
+                    if positionals:
+                        postingLists[term] = self.get_positionals(positionals)
+                    else:
+                        postingLists[term] = self.get_posting(term)
+                isNot = False
+            else:
+                isNot = True
+                
         
-        return result, prev
-        
+        finalAticles = postingLists[terms[0]]
+        for pl in postingLists[term]:
+            finalAticles = self.and_posting(finalAticles,pl)
+
+        return finalAticles
+
+
+        ########################################
+        ## COMPLETAR PARA TODAS LAS VERSIONES ##
+        ########################################
 
 
 
@@ -642,12 +594,8 @@ class SAR_Indexer:
         ########################################
 
         if term in self.index:
-            if self.positional:
-                return list(self.index[term].keys())
-            else:
-                return self.index[term]
-        return []
-
+            return self.index[term]
+        return {}
 
 
     def get_positionals(self, terms:str):
@@ -661,58 +609,53 @@ class SAR_Indexer:
 
         """
 
-        if not self.positional or len(terms) == 0:
-            return []
-            
-        # 1. Comprobamos que todos los términos existan en el índice. 
-        # Si uno solo falla, la frase no puede existir.
-        for t in terms:
-            if t not in self.index:
-                return []
-                
-        # 2. Intersección inicial de artículos (AND).
-        # Extraemos las claves (artids) del diccionario del primer término
-        common_articles = list(self.index[terms[0]].keys())
-        
-        # Hacemos un AND secuencial con los artids de los demás términos
-        for i in range(1, len(terms)):
-            next_articles = list(self.index[terms[i]].keys())
-            common_articles = self.and_posting(common_articles, next_articles)
-            
-            # Si en algún momento la intersección se queda vacía, paramos
-            if not common_articles:
-                return []
-                
-        # 3. Comprobación posicional en los artículos candidatos
-        result = []
-        for artid in common_articles:
-            # Obtenemos las listas de posiciones de cada término para este artículo específico
-            # Ejemplo: pos_lists = [[2, 15], [3, 20], [4, 88]] (posiciones de "fin", "de", "semana")
-            pos_lists = [self.index[t][artid] for t in terms]
-            
-            match_found = False
-            
-            # Recorremos las posiciones en las que aparece el PRIMER término
-            for p0 in pos_lists[0]:
-                is_consecutive = True
-                
-                # Comprobamos si los siguientes términos están en las posiciones consecutivas (p0+1, p0+2...)
-                for i in range(1, len(terms)):
-                    # Si la posición esperada no está en la lista de posiciones del término "i"
-                    if (p0 + i) not in pos_lists[i]:
-                        is_consecutive = False
-                        break # Rompemos este bucle interior, esta secuencia no sirve
-                
-                # Si hemos encontrado al menos una secuencia completa y consecutiva
-                if is_consecutive:
-                    match_found = True
-                    break # No hace falta seguir buscando más secuencias en este mismo artículo
-                    
-            # Si el artículo superó la prueba posicional, lo añadimos al resultado final
-            if match_found:
-                result.append(artid)
-                
+        #if isinstance(terms, str):
+        terms = self.tokenize(terms)
+        #if not terms:
+        #    return {}
+
+        result = self.get_posting(terms[0])
+        #if not result:
+        #    return {}
+
+        for term in terms[1:]:
+            next_posting = self.get_posting(term)
+            #if not next_posting:
+                #return {}
+
+            new_result = {}
+            for article, positions in result.items():
+                if article not in next_posting:
+                    continue
+
+                next_positions = next_posting[article]
+                i, j = 0, 0
+                matched_positions = []
+                while i < len(positions) and j < len(next_positions):
+                    expected = positions[i] + 1
+                    if next_positions[j] == expected:
+                        matched_positions.append(next_positions[j])
+                        i += 1
+                        j += 1
+                    elif next_positions[j] < expected:
+                        j += 1
+                    else:
+                        i += 1
+
+                if matched_positions:
+                    new_result[article] = matched_positions
+
+            result = new_result
+            #if not result:
+                #return {}
+
         return result
+            
+        
+
+        #################################
+        ## COMPLETAR PARA POSICIONALES ##
+        #################################
 
 
 
@@ -729,13 +672,34 @@ class SAR_Indexer:
 
         return: posting list con todos los artid exceptos los contenidos en p
 
-        """
-        # Obtenemos la lista con TODOS los identificadores de los artículos.
-        # Al haberse generado secuencialmente en index_file, ya está ordenada.
-        all_articles = list(self.articles.keys())
+        artInP = {}
+        artOutP = {}
+        for pi in p:
+            artInP = self.get_posting(pi)
+
         
-        # El reverse es simplemente: TODOS los artículos EXCEPT los que están en 'p'
-        return self.minus_posting(all_articles, p)
+        all_articles = self.articles
+
+        for d in self.articles:
+            if d not in artInP:
+                artOutP.append(d)
+
+        return artOutP
+
+        """
+
+        res = {}
+
+        for art_id in self.articles:
+            
+            if art_id not in p:
+                res[art_id] = art_id.values()
+
+        return res
+    
+        ########################################
+        ## COMPLETAR PARA TODAS LAS VERSIONES ##
+        ########################################
 
 
 
@@ -752,12 +716,12 @@ class SAR_Indexer:
 
         """
         #No skip Pointers?
-        articles = []
+        articles = {}
         pi = 0
         pj = 0
         while pi < len(p1) and pj < len(p2):
             if p1[pi] == p2[pj]:
-                articles.append(p1[pi])
+                articles[p1[pi]] = p1[pi]
                 pi += 1
                 pj += 1
             elif p1[pi] < p2[pj]:
@@ -869,23 +833,16 @@ class SAR_Indexer:
         return: el numero de artículo recuperadas, para la opcion -T
 
         """
-        """
-        Resuelve una consulta y la muestra junto al numero de resultados
-        """
-        
-        result, _ = self.solve_query(query)
-        
-        print(f"Query: '{query}'")
-        print(f"Number of results: {len(result)}")
-        
-        # Límite de resultados a mostrar según la configuración self.show_all
-        limit = len(result) if self.show_all else min(len(result), self.SHOW_MAX)
-        
-        for i in range(limit):
-            artid = result[i]
-            article = self.articles[artid]
-            title = article.get('title', 'N/A')
-            url = article.get('url', 'N/A')
-            # Formato de visualización: Orden | artid | Titulo | Url
-            print(f"#{i+1}\t({artid})\t{title}\t{url}")
-            
+
+        results = []
+        if len(query) > 0 and query[0] != '#':
+            results,_ = self.solve_query(query)
+            print(f'{query}\t{results}')
+        else:
+            print(query)
+
+        return len(results)
+
+        ################
+        ## COMPLETAR  ##
+        ################
