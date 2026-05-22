@@ -195,23 +195,17 @@ class SAR_Indexer:
         """
         Añade los chuncks (frases) del texto "txt" correspondiente al articulo "artid".
         """
-        try:
-            sentences = nltk.sent_tokenize(txt)
-        except LookupError:
-            # Por si no tienes descargado el paquete de tokenización localmente
-            nltk.download('punkt')
-            nltk.download('punkt_tab')
-            sentences = nltk.sent_tokenize(txt)
 
-        # 2 - actualizar los atributos necesarios
-        if artid not in self.artid_to_emb:
-            self.artid_to_emb[artid] = []
+        sentences = nltk.sent_tokenize(txt)
+
+        #if artid not in self.artid_to_emb:
+         #   self.artid_to_emb[artid] = []
             
         for sentence in sentences:
-            chunk_idx = len(self.chuncks)
+            chunk = len(self.chuncks)
             self.chuncks.append(sentence)
             self.chunck_index.append(artid) # El índice de la frase apunta al ID del artículo
-            self.artid_to_emb[artid].append(chunk_idx)
+            self.artid_to_emb[artid].append(chunk)
               
         
 
@@ -225,15 +219,10 @@ class SAR_Indexer:
         # 2: Opcionalmente se puede guardar información del modelo semántico (kdtree y/o embeddings) en el SAR_Indexer
         
         """
-        print(f"Creating kdtree ...", end="", flush=True)
-        # 1: Llamar al método fit del modelo semántico pasándole todas las frases
+
         self.model.fit(self.chuncks)
-        
-        # 2: Guardar información del modelo semántico en el SAR_Indexer para que se guarde en disco
         self.kdtree = self.model.kdtree
         self.embeddings = self.model.embeddings
-        print("done!")
-
 
         
     def solve_semantic_query(self, query:str):
@@ -251,35 +240,29 @@ class SAR_Indexer:
 
         self.load_semantic_model()
         
-        self.load_semantic_model()
-        # Inyectamos en el modelo el árbol y los embeddings que cargamos desde disco
         self.model.set_kdtree(self.kdtree)
         self.model.set_embeddings(self.embeddings)
         
         top_k = self.MAX_EMBEDDINGS
         total_chunks = len(self.chuncks)
         
-        # Bucle para aumentar el número de resultados extraídos si no llegamos al umbral
         while True:
-            # 1 - método query del modelo sémantico
             results = self.model.query(query, top_k)
             last_dist = results[-1][0]
             
-            # 3 - Comprobar umbral y aumentar top_k si es necesario
             if self.semantic_threshold is not None and last_dist <= self.semantic_threshold:
-                if top_k >= total_chunks: # 4 - Salir si recuperamos todo
+                if top_k >= total_chunks:
                     break
                 top_k = min(top_k * 2, total_chunks)
             else:
                 break
                 
-        # 5 - Convertir lista de chuncks a artículos sin repetir
         final_articles = []
-        for dist, idx in results:
+        for dist, id in results:
             if self.semantic_threshold is not None and dist > self.semantic_threshold:
-                continue # Descartar los que están por encima del umbral
+                continue
                 
-            artid = self.chunck_index[idx]
+            artid = self.chunck_index[id]
             if artid not in final_articles:
                 final_articles.append(artid)
                 
@@ -310,32 +293,24 @@ class SAR_Indexer:
         top_k = self.MAX_EMBEDDINGS
         total_chunks = len(self.chuncks)
         
-        target_articles = set(articles)
-        recovered_articles = set()
+        target_articles = articles
         ordered_articles = []
         
         while True:
-            # 1 y 2 - Extraemos top_k chunks más cercanos
             results = self.model.query(query, top_k)
             
-            # 3 - Extraemos los artículos de esos chunks
-            for dist, idx in results:
-                artid = self.chunck_index[idx]
-                # Si el artículo está en nuestra lista de "RI binaria" y no lo habíamos procesado
-                if artid in target_articles and artid not in recovered_articles:
-                    recovered_articles.add(artid)
-                    ordered_articles.append(artid) # Se añaden en orden de llegada (similitud)
+            for dist, id in results:
+                artid = self.chunck_index[id]
+                if artid in target_articles and artid not in ordered_articles:
+                    ordered_articles.append(artid)
                     
-            # 4 - Si ya hemos recuperado todos los de la búsqueda binaria, salimos
-            if len(recovered_articles) == len(target_articles) or top_k >= total_chunks:
+            if len(ordered_articles) == len(target_articles) or top_k >= total_chunks:
                 break
                 
-            # Aumentamos rango
             top_k = min(top_k * 2, total_chunks)
             
-        # Si algún artículo quedó rezagado y nunca apareció (muy improbable), lo ponemos al final
         for artid in articles:
-            if artid not in recovered_articles:
+            if artid not in ordered_articles:
                 ordered_articles.append(artid)
                 
         return ordered_articles
@@ -531,12 +506,13 @@ class SAR_Indexer:
         if not query:
             return {}
 
+        query = query.lower()
         posting_lists = []
         is_not = False
         terms = re.findall(r'"([^"]*)"|(\S+)', query)
 
         for positional, term in terms:
-            if term == 'NOT':
+            if term == 'not':
                 is_not = True
             else:
                 if positional:
@@ -554,11 +530,18 @@ class SAR_Indexer:
         for pl in posting_lists[1:]:
             final_articles = self.and_posting(final_articles, pl)
 
+        #Busqueda semantica
+        if self.semantic:
+            articles_list = self.solve_semantic_query(query) 
+            final_articles = dict.fromkeys(articles_list) 
+
         # reranking
         if self.semantic_ranking and final_articles != {}:
             articles_list = list(final_articles.keys())
             articles_list = self.semantic_reranking(query, articles_list)
             final_articles = dict.fromkeys(articles_list)
+        
+
 
         return final_articles
 
@@ -763,7 +746,7 @@ class SAR_Indexer:
             if len(line) > 0 and line[0] != '#':
                 query, ref = line.split('\t')
                 reference = int(ref)
-                result, _ = self.solve_query(query)
+                result = self.solve_query(query)
                 result = len(result)
                 if reference == result:
                     print(f'{query}\t{result}')
@@ -808,7 +791,7 @@ class SAR_Indexer:
             
             print("=======================================================")
             for i in range(rangeShow):
-                article = self.articles[i]
+                article = self.articles[results[i]]
                 title = article['title']
                 url = article['url']
                 print(f" #{i+1} ({results[i]}) {title}:\t{url}")
