@@ -689,31 +689,6 @@ class SAR_Indexer:
         return: posting list con los artid incluidos de p1 y no en p2
 
         """
-        result = []
-        i = 0
-        j = 0
-        
-        while i < len(p1) and j < len(p2):
-            if p1[i] == p2[j]:
-                # El artículo está en p1 y en p2 -> Lo excluimos y avanzamos ambos
-                i += 1
-                j += 1
-            elif p1[i] < p2[j]:
-                # El artículo está en p1 y es menor que el actual de p2 -> Lo incluimos
-                result.append(p1[i])
-                i += 1
-            else:
-                # El artículo de p2 es menor que el de p1 -> Avanzamos p2 para intentar alcanzarlo
-                j += 1
-                
-        # Si hemos terminado de recorrer p2 pero aún quedan elementos en p1,
-        # los añadimos todos porque sabemos que no están en p2
-        while i < len(p1):
-            result.append(p1[i])
-            i += 1
-            
-        return result
-
 
 
 
